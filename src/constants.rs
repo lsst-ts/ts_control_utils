@@ -19,9 +19,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod biquadratic_filter;
-pub mod constants;
-pub mod enums;
-pub mod simple_delay_filter;
-pub mod tcp_server;
-pub mod utility;
+pub const LOCAL_HOST: &str = "127.0.0.1";
+pub const ALL_HOST: &str = "0.0.0.0";
+pub const TERMINATOR: &[u8; 2] = b"\r\n";
