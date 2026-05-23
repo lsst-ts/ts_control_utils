@@ -22,11 +22,86 @@
 use approx::assert_relative_eq;
 use config::Config;
 use serde_json::Value;
+use std::fmt::Display;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
+use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
+
+/// Implement `ConfigValue` for the types that can be parsed from a string.
+///
+/// # Parameters
+/// * `$t` - Types to implement `ConfigValue` for.
+macro_rules! impl_config_value_from_str {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl ConfigValue for $t {
+                fn parse_value(s: &str) -> Self {
+                    parse_value_from_str::<$t>(s, stringify!($t))
+                }
+            }
+        )+
+    };
+}
+
+/// Implement `ConfigValue` for integer types that support prefixed radix
+/// strings.
+///
+/// Supported prefixes are `0x`/`0X` (hex), `0b`/`0B` (binary), and `0o`/`0O`
+/// (octal). Prefixed values may include an optional sign.
+///
+/// # Parameters
+/// * `$t` - Integer types to implement `ConfigValue` for.
+macro_rules! impl_config_value_from_int {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl ConfigValue for $t {
+                fn parse_value(s: &str) -> Self {
+                    let (sign, magnitude) = if let Some(rest) = s.strip_prefix('-') {
+                        ("-", rest)
+                    } else if let Some(rest) = s.strip_prefix('+') {
+                        ("+", rest)
+                    } else {
+                        ("", s)
+                    };
+
+                    let prefixed = magnitude
+                        .strip_prefix("0x")
+                        .or_else(|| magnitude.strip_prefix("0X"))
+                        .map(|digits| (16, digits))
+                        .or_else(|| {
+                            magnitude
+                                .strip_prefix("0b")
+                                .or_else(|| magnitude.strip_prefix("0B"))
+                                .map(|digits| (2, digits))
+                        })
+                        .or_else(|| {
+                            magnitude
+                                .strip_prefix("0o")
+                                .or_else(|| magnitude.strip_prefix("0O"))
+                                .map(|digits| (8, digits))
+                        });
+
+                    if let Some((radix, digits)) = prefixed {
+                        let literal = if sign.is_empty() {
+                            digits.to_string()
+                        } else {
+                            format!("{sign}{digits}")
+                        };
+
+                        <$t>::from_str_radix(&literal, radix).unwrap_or_else(|err| {
+                            panic!("{s} should parse as {}: {err}", stringify!($t))
+                        })
+                    } else {
+                        parse_value_from_str::<$t>(s, stringify!($t))
+                    }
+                }
+            }
+        )+
+    };
+}
 
 /// Trait for parsing the configuration value.
 ///
@@ -43,77 +118,25 @@ pub trait ConfigValue: Sized {
     fn parse_value(s: &str) -> Self;
 }
 
-/// Implement the trait ConfigValue for String.
+/// Parse the configuration value from the string.
 ///
 /// # Parameters
-/// * `String` - Type of the configuration value.
-impl ConfigValue for String {
-    fn parse_value(s: &str) -> Self {
-        s.to_string()
-    }
+/// * `s` - String to parse.
+/// * `type_name` - Name of the type to parse.
+///
+/// # Returns
+/// The parsed configuration value.
+fn parse_value_from_str<T>(s: &str, type_name: &str) -> T
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    s.parse::<T>()
+        .unwrap_or_else(|err| panic!("{s} should parse as {type_name}: {err}"))
 }
 
-/// Implement the trait ConfigValue for f64.
-///
-/// # Parameters
-/// * `f64` - Type of the configuration value.
-impl ConfigValue for f64 {
-    fn parse_value(s: &str) -> Self {
-        s.parse::<f64>()
-            .unwrap_or_else(|_| panic!("{s} should parse as f64"))
-    }
-}
-
-/// Implement the trait ConfigValue for usize.
-///
-/// # Parameters
-/// * `usize` - Type of the configuration value.
-impl ConfigValue for usize {
-    fn parse_value(s: &str) -> Self {
-        s.parse::<usize>()
-            .unwrap_or_else(|_| panic!("{s} should parse as usize"))
-    }
-}
-
-/// Implement the trait ConfigValue for i32.
-///
-/// # Parameters
-/// * `i32` - Type of the configuration value.
-impl ConfigValue for i32 {
-    fn parse_value(s: &str) -> Self {
-        s.parse::<i32>()
-            .unwrap_or_else(|_| panic!("{s} should parse as i32"))
-    }
-}
-
-/// Implement the trait ConfigValue for u64.
-///
-/// # Parameters
-/// * `u64` - Type of the configuration value.
-///
-/// # Panics
-/// If the hex string does not start with 0x or 0X.
-impl ConfigValue for u64 {
-    fn parse_value(s: &str) -> Self {
-        if !s.starts_with("0x") && !s.starts_with("0X") {
-            panic!("Hex string {s} should start with 0x or 0X");
-        }
-
-        u64::from_str_radix(&s[2..], 16)
-            .unwrap_or_else(|_| panic!("Hex string {s} should parse as u64"))
-    }
-}
-
-/// Implement the trait ConfigValue for bool.
-///
-/// # Parameters
-/// * `bool` - Type of the configuration value.
-impl ConfigValue for bool {
-    fn parse_value(s: &str) -> Self {
-        s.parse::<bool>()
-            .unwrap_or_else(|_| panic!("{s} should parse as bool"))
-    }
-}
+impl_config_value_from_str!(f32, f64, bool, String);
+impl_config_value_from_int!(usize, i8, u8, i16, u16, i32, u32, i64, u64);
 
 /// Get the configuation from the file.
 ///
@@ -294,10 +317,26 @@ mod tests {
     #[test]
     fn test_get_parameter() {
         let mut file = Builder::new().suffix(".yaml").tempfile().unwrap();
-        let _ = writeln!(
-            file,
-            "setting_str: 'abc'\nsetting_float: 0.94\nsetting_bool: true\nsetting_u64: 0xff800003fffffff8"
-        );
+        let content = r#"
+            setting_str: 'abc'
+            setting_float: 0.94
+            setting_bool: true
+            setting_i8_bin: -0b01
+            setting_u8_bin: 0B011
+            setting_i8_oct: -0o177
+            setting_u8_oct: 0O377
+            setting_i8_dec: -3
+            setting_u8_dec: 5
+            setting_i8_hex: -0x7f
+            setting_u8_hex: 0Xfe
+            setting_i16_hex: -0x1234
+            setting_u16_hex: 0Xabcd
+            setting_i32_hex: -0x123456
+            setting_u32_hex: 0X89abcdef
+            setting_i64_hex: -0x123456789abcdef
+            setting_u64_hex: 0Xff800003fffffff8
+        "#;
+        let _ = writeln!(file, "{}", content);
 
         let filepath = file.path();
 
@@ -310,8 +349,47 @@ mod tests {
         let setting_bool: bool = get_parameter(filepath, "setting_bool");
         assert!(setting_bool);
 
-        let setting_u64: u64 = get_parameter(filepath, "setting_u64");
-        assert_eq!(setting_u64, 0xff800003fffffff8);
+        let setting_i8_bin: i8 = get_parameter(filepath, "setting_i8_bin");
+        assert_eq!(setting_i8_bin, -0b01_i8);
+
+        let setting_u8_bin: u8 = get_parameter(filepath, "setting_u8_bin");
+        assert_eq!(setting_u8_bin, 0b011_u8);
+
+        let setting_i8_oct: i8 = get_parameter(filepath, "setting_i8_oct");
+        assert_eq!(setting_i8_oct, -0o177_i8);
+
+        let setting_u8_oct: u8 = get_parameter(filepath, "setting_u8_oct");
+        assert_eq!(setting_u8_oct, 0o377_u8);
+
+        let setting_i8_dec: i8 = get_parameter(filepath, "setting_i8_dec");
+        assert_eq!(setting_i8_dec, -3_i8);
+
+        let setting_u8_dec: u8 = get_parameter(filepath, "setting_u8_dec");
+        assert_eq!(setting_u8_dec, 5_u8);
+
+        let setting_i8_hex: i8 = get_parameter(filepath, "setting_i8_hex");
+        assert_eq!(setting_i8_hex, -0x7f_i8);
+
+        let setting_u8_hex: u8 = get_parameter(filepath, "setting_u8_hex");
+        assert_eq!(setting_u8_hex, 0xfe_u8);
+
+        let setting_i16_hex: i16 = get_parameter(filepath, "setting_i16_hex");
+        assert_eq!(setting_i16_hex, -0x1234_i16);
+
+        let setting_u16_hex: u16 = get_parameter(filepath, "setting_u16_hex");
+        assert_eq!(setting_u16_hex, 0xabcd_u16);
+
+        let setting_i32_hex: i32 = get_parameter(filepath, "setting_i32_hex");
+        assert_eq!(setting_i32_hex, -0x123456_i32);
+
+        let setting_u32_hex: u32 = get_parameter(filepath, "setting_u32_hex");
+        assert_eq!(setting_u32_hex, 0x89ab_cdef_u32);
+
+        let setting_i64_hex: i64 = get_parameter(filepath, "setting_i64_hex");
+        assert_eq!(setting_i64_hex, -0x123456789abcdef_i64);
+
+        let setting_u64_hex: u64 = get_parameter(filepath, "setting_u64_hex");
+        assert_eq!(setting_u64_hex, 0xff800003fffffff8_u64);
     }
 
     #[test]
