@@ -1,5 +1,9 @@
 # Version History
 
+0.1.3
+
+- Use the `rubincr.lsst.org` for docker image in `Jenkinsfile`.
+
 0.1.2
 
 - Upgrade the dependencies.
