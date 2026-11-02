@@ -1,5 +1,9 @@
 # Version History
 
+0.1.4
+
+- Put the `TcpServer.read_string()` to be public.
+
 0.1.3
 
 - Use the `rubincr.lsst.org` for docker image in `Jenkinsfile`.
