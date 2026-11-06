@@ -177,7 +177,7 @@ impl TcpServer {
     ///
     /// # Returns
     /// A string slice that holds the data.
-    fn read_string(&mut self) -> String {
+    pub fn read_string(&mut self) -> String {
         let terminator_length = self._terminator.len();
         // Always clear the buffer before reading the data.
         self._buffer.clear();
