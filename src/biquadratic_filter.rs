@@ -20,17 +20,17 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 struct SingleBiquadraticFilter {
-    _a11: f64,
-    _a21: f64,
-    _b11: f64,
-    _b21: f64,
-    _g_m1: Vec<f64>,
-    _g_m2: Vec<f64>,
+    a11: f64,
+    a21: f64,
+    b11: f64,
+    b21: f64,
+    g_m1: Vec<f64>,
+    g_m2: Vec<f64>,
 }
 
 pub struct BiquadraticFilter {
-    _gain: f64,
-    _bqd_filters: Vec<SingleBiquadraticFilter>,
+    gain: f64,
+    bqd_filters: Vec<SingleBiquadraticFilter>,
 }
 
 impl SingleBiquadraticFilter {
@@ -62,19 +62,19 @@ impl SingleBiquadraticFilter {
     /// A new SingleBiquadraticFilter object.
     fn new(a11: f64, a21: f64, b11: f64, b21: f64, num_element: usize) -> Self {
         Self {
-            _a11: a11,
-            _a21: a21,
-            _b11: b11,
-            _b21: b21,
-            _g_m1: vec![0.0; num_element],
-            _g_m2: vec![0.0; num_element],
+            a11,
+            a21,
+            b11,
+            b21,
+            g_m1: vec![0.0; num_element],
+            g_m2: vec![0.0; num_element],
         }
     }
 
     /// Reset the filter.
     fn reset(&mut self) {
-        self._g_m1 = vec![0.0; self._g_m1.len()];
-        self._g_m2 = vec![0.0; self._g_m2.len()];
+        self.g_m1 = vec![0.0; self.g_m1.len()];
+        self.g_m2 = vec![0.0; self.g_m2.len()];
     }
 
     /// Filter the input value.
@@ -92,15 +92,15 @@ impl SingleBiquadraticFilter {
     fn filter(&mut self, value: &[f64]) -> Vec<f64> {
         // Check the size of the input value
         assert!(
-            value.len() == self._g_m1.len(),
+            value.len() == self.g_m1.len(),
             "Size of the input value should be {}.",
-            self._g_m1.len()
+            self.g_m1.len()
         );
 
         // Filtered value
         // value_filter = value + self._g_m1
         let value_filter: Vec<f64> = self
-            ._g_m1
+            .g_m1
             .iter()
             .zip(value.iter())
             .map(|(g_m1, val)| g_m1 + val)
@@ -112,18 +112,18 @@ impl SingleBiquadraticFilter {
         let g_m2 = value
             .iter()
             .zip(value_filter.iter())
-            .map(|(val, val_filter)| self._b21 * val - self._a21 * val_filter)
+            .map(|(val, val_filter)| self.b21 * val - self.a21 * val_filter)
             .collect();
         let g_m1 = self
-            ._g_m2
+            .g_m2
             .iter()
             .zip(value.iter())
             .zip(value_filter.iter())
-            .map(|((g_m2, val), val_filter)| g_m2 + self._b11 * val - self._a11 * val_filter)
+            .map(|((g_m2, val), val_filter)| g_m2 + self.b11 * val - self.a11 * val_filter)
             .collect();
 
-        self._g_m1 = g_m1;
-        self._g_m2 = g_m2;
+        self.g_m1 = g_m1;
+        self.g_m2 = g_m2;
 
         value_filter
     }
@@ -168,15 +168,12 @@ impl BiquadraticFilter {
             bqd_filters.push(bqd_filter);
         });
 
-        Self {
-            _gain: gain,
-            _bqd_filters: bqd_filters,
-        }
+        Self { gain, bqd_filters }
     }
 
     /// Reset the filter.
     pub fn reset(&mut self) {
-        self._bqd_filters
+        self.bqd_filters
             .iter_mut()
             .for_each(|bqd_filter| bqd_filter.reset());
     }
@@ -191,11 +188,11 @@ impl BiquadraticFilter {
     /// Filtered value.
     pub fn filter(&mut self, value: &[f64]) -> Vec<f64> {
         let mut value_filter = value.to_vec();
-        self._bqd_filters.iter_mut().for_each(|bqd_filter| {
+        self.bqd_filters.iter_mut().for_each(|bqd_filter| {
             value_filter = bqd_filter.filter(&value_filter);
         });
 
-        value_filter.iter_mut().for_each(|val| *val *= self._gain);
+        value_filter.iter_mut().for_each(|val| *val *= self.gain);
 
         value_filter
     }
@@ -303,8 +300,8 @@ mod tests {
 
         bqd_filter.reset();
 
-        assert_eq!(bqd_filter._g_m1, vec![0.0, 0.0]);
-        assert_eq!(bqd_filter._g_m2, vec![0.0, 0.0]);
+        assert_eq!(bqd_filter.g_m1, vec![0.0, 0.0]);
+        assert_eq!(bqd_filter.g_m2, vec![0.0, 0.0]);
     }
 
     #[test]
@@ -317,12 +314,12 @@ mod tests {
         assert_relative_eq_vector(&value_filter_1, &vec![0.3, 0.9], EPSILON);
 
         assert_relative_eq_vector(
-            &biquadratic_filter._bqd_filters[1]._g_m1,
+            &biquadratic_filter.bqd_filters[1].g_m1,
             &vec![0.2, 0.6],
             EPSILON,
         );
         assert_relative_eq_vector(
-            &biquadratic_filter._bqd_filters[1]._g_m2,
+            &biquadratic_filter.bqd_filters[1].g_m2,
             &vec![0.2, 0.6],
             EPSILON,
         );
@@ -330,7 +327,7 @@ mod tests {
         // Second time
         let new_value: Vec<f64> = value_filter_1
             .iter()
-            .map(|val| val / biquadratic_filter._gain)
+            .map(|val| val / biquadratic_filter.gain)
             .collect();
 
         let value_filter_2 = biquadratic_filter.filter(&new_value);
@@ -338,12 +335,12 @@ mod tests {
         assert_relative_eq_vector(&value_filter_2, &vec![1.5, 4.5], EPSILON);
 
         assert_relative_eq_vector(
-            &biquadratic_filter._bqd_filters[0]._g_m1,
+            &biquadratic_filter.bqd_filters[0].g_m1,
             &vec![0.0, 0.0],
             EPSILON,
         );
         assert_relative_eq_vector(
-            &biquadratic_filter._bqd_filters[0]._g_m2,
+            &biquadratic_filter.bqd_filters[0].g_m2,
             &vec![-0.4, -1.2],
             EPSILON,
         );
@@ -356,7 +353,7 @@ mod tests {
 
         biquadratic_filter.reset();
 
-        assert_eq!(biquadratic_filter._bqd_filters[0]._g_m1, vec![0.0, 0.0]);
-        assert_eq!(biquadratic_filter._bqd_filters[0]._g_m2, vec![0.0, 0.0]);
+        assert_eq!(biquadratic_filter.bqd_filters[0].g_m1, vec![0.0, 0.0]);
+        assert_eq!(biquadratic_filter.bqd_filters[0].g_m2, vec![0.0, 0.0]);
     }
 }

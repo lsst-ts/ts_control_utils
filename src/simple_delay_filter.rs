@@ -22,8 +22,8 @@
 use std::collections::VecDeque;
 
 pub struct SimpleDelayFilter {
-    _coeffs: Vec<f64>,
-    _delay_history: VecDeque<Vec<f64>>,
+    coeffs: Vec<f64>,
+    delay_history: VecDeque<Vec<f64>>,
 }
 
 impl SimpleDelayFilter {
@@ -51,14 +51,14 @@ impl SimpleDelayFilter {
         }
 
         Self {
-            _coeffs: coefficients.to_vec(),
-            _delay_history: delay_history,
+            coeffs: coefficients.to_vec(),
+            delay_history,
         }
     }
 
     /// Reset the filter.
     pub fn reset(&mut self) {
-        self._delay_history
+        self.delay_history
             .iter_mut()
             .for_each(|vector| vector.iter_mut().for_each(|val| *val = 0.0));
     }
@@ -78,23 +78,23 @@ impl SimpleDelayFilter {
     pub fn filter(&mut self, value: &[f64]) -> Vec<f64> {
         // Check the size of the input value
         assert!(
-            value.len() == self._delay_history[0].len(),
+            value.len() == self.delay_history[0].len(),
             "The size of the input value should be {}.",
-            self._delay_history[0].len()
+            self.delay_history[0].len()
         );
 
         // Filtered value
-        let mut value_filter: Vec<f64> = value.iter().map(|val| self._coeffs[0] * val).collect();
-        for idx in 1..self._coeffs.len() {
+        let mut value_filter: Vec<f64> = value.iter().map(|val| self.coeffs[0] * val).collect();
+        for idx in 1..self.coeffs.len() {
             value_filter
                 .iter_mut()
-                .zip(self._delay_history[idx - 1].iter())
-                .for_each(|(val, delay)| *val += self._coeffs[idx] * delay);
+                .zip(self.delay_history[idx - 1].iter())
+                .for_each(|(val, delay)| *val += self.coeffs[idx] * delay);
         }
 
         // Update the history
-        self._delay_history.pop_back();
-        self._delay_history.push_front(value.to_vec());
+        self.delay_history.pop_back();
+        self.delay_history.push_front(value.to_vec());
 
         // return value_filter
         value_filter
@@ -117,13 +117,13 @@ mod tests {
     fn test_new() {
         let simple_delay_filter = create_simple_delay_filter();
 
-        assert_eq!(simple_delay_filter._coeffs, vec![0.1, 0.2]);
+        assert_eq!(simple_delay_filter.coeffs, vec![0.1, 0.2]);
         check_delay_history_size(&simple_delay_filter);
     }
 
     fn check_delay_history_size(simple_delay_filter: &SimpleDelayFilter) {
-        assert_eq!(simple_delay_filter._delay_history.len(), 2);
-        assert_eq!(simple_delay_filter._delay_history.capacity(), 2);
+        assert_eq!(simple_delay_filter.delay_history.len(), 2);
+        assert_eq!(simple_delay_filter.delay_history.capacity(), 2);
     }
 
     #[test]
@@ -156,9 +156,9 @@ mod tests {
     ) {
         check_delay_history_size(simple_delay_filter);
 
-        assert_relative_eq_vector(&simple_delay_filter._delay_history[0], value_1, EPSILON);
+        assert_relative_eq_vector(&simple_delay_filter.delay_history[0], value_1, EPSILON);
 
-        assert_relative_eq_vector(&simple_delay_filter._delay_history[1], value_2, EPSILON);
+        assert_relative_eq_vector(&simple_delay_filter.delay_history[1], value_2, EPSILON);
     }
 
     #[test]
