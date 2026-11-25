@@ -23,5 +23,6 @@ pub mod biquadratic_filter;
 pub mod constants;
 pub mod enums;
 pub mod simple_delay_filter;
+pub mod tcp_client_server_common;
 pub mod tcp_server;
 pub mod utility;
