@@ -19,10 +19,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use log::{debug, info};
-use serde_json::{Value, from_str};
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use log::info;
+use std::net::TcpListener;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -30,20 +28,15 @@ use std::sync::{
 use std::thread::sleep;
 use std::time::Duration;
 
+use crate::tcp_client_server_common::{TcpClientServerCommon, TcpConnection};
+
 pub struct TcpServer {
-    // Name of the server.
-    name: String,
+    // Connection state.
+    connection: TcpConnection,
     // Listener to accept incoming connections.
     listener: TcpListener,
-    // Reader and writer for the accepted connection.
-    reader: Option<BufReader<TcpStream>>,
-    writer: Option<BufWriter<TcpStream>>,
     // Timeout in milliseconds.
     pub timeout: u64,
-    // Buffer to read the received message.
-    buffer: Vec<u8>,
-    // Terminator of the message.
-    terminator: Vec<u8>,
     // Stop the server.
     stop: Arc<AtomicBool>,
     // The server is connected or not.
@@ -79,18 +72,11 @@ impl TcpServer {
             .set_nonblocking(true)
             .expect("Tcp listener should set non-blocking.");
 
-        const DEFAULT_BUFFER_SIZE: usize = 100;
-
         Self {
-            name: String::from(name),
+            connection: TcpConnection::new(name, terminator),
 
             listener,
-            reader: None,
-            writer: None,
             timeout,
-
-            buffer: Vec::with_capacity(DEFAULT_BUFFER_SIZE),
-            terminator: terminator.to_owned(),
 
             stop: stop.clone(),
             is_connected: Arc::new(AtomicBool::new(false)),
@@ -116,38 +102,16 @@ impl TcpServer {
     /// return false.
     fn accept(&mut self) -> bool {
         if let Ok((stream, _)) = self.listener.accept() {
-            stream
-                .set_nodelay(true)
-                .expect("Tcp stream should set nodelay.");
-            stream
-                .set_nonblocking(true)
-                .expect("Tcp stream should set non-blocking.");
-
             if let Ok(peer_addr) = stream.peer_addr() {
-                info!("{} is connected from {}.", self.name, peer_addr);
+                info!("{} is connected from {}.", self.connection.name, peer_addr);
             }
 
-            self.is_connected.store(true, Ordering::Relaxed);
-
-            // Wrap the stream to the BufReader and BufWriter.
-            self.reader = Some(BufReader::new(
-                stream.try_clone().expect("Tcp stream should clone."),
-            ));
-            self.writer = Some(BufWriter::new(stream));
+            self.attach_stream(stream);
 
             return true;
         };
 
         false
-    }
-
-    /// Check if the server is connected.
-    ///
-    /// # Returns
-    /// A boolean value. If the server is connected, return true. Otherwise,
-    /// return false.
-    fn is_connected(&self) -> bool {
-        self.reader.is_some() && self.writer.is_some()
     }
 
     /// Get the reference to the connection status. This is useful to check the
@@ -157,171 +121,6 @@ impl TcpServer {
     /// An Arc instance to check the connection status.
     pub fn get_connection_status_reference(&self) -> Arc<AtomicBool> {
         self.is_connected.clone()
-    }
-
-    /// Read the JSON data.
-    ///
-    /// # Returns
-    /// A Value instance that holds the JSON data.
-    pub fn read_json(&mut self) -> Value {
-        let data = self.read_string();
-        match from_str(&data) {
-            Ok(value) => value,
-            Err(_) => {
-                if !data.is_empty() {
-                    info!("{} receives non-JSON message: {}.", self.name, data);
-                }
-                Value::Null
-            }
-        }
-    }
-
-    /// Read the string data.
-    ///
-    /// # Returns
-    /// A string slice that holds the data.
-    pub fn read_string(&mut self) -> String {
-        let terminator_length = self.terminator.len();
-        // Always clear the buffer before reading the data.
-        self.buffer.clear();
-        if let Some(stream) = self.reader.as_mut() {
-            let mut byte = [0; 1];
-            loop {
-                match stream.read(&mut byte) {
-                    Ok(0) => {
-                        // The client is disconnected.
-                        debug!(
-                            "{} is disconnected from the client when reading.",
-                            self.name
-                        );
-                        self.close_stream();
-                        break;
-                    }
-
-                    Ok(_) => {
-                        self.buffer.push(byte[0]);
-                        // Check the terminator.
-                        if self.buffer.ends_with(&self.terminator) {
-                            break;
-                        }
-                    }
-
-                    Err(_) => {
-                        break;
-                    }
-                }
-            }
-        }
-
-        if self.buffer.len() < terminator_length {
-            String::new()
-        } else {
-            match String::from_utf8(self.buffer[..(self.buffer.len() - terminator_length)].to_vec())
-            {
-                Ok(message) => {
-                    debug!("{} receives: {}.", self.name, message);
-
-                    message
-                }
-                Err(_) => String::new(),
-            }
-        }
-    }
-
-    /// Write the JSON item.
-    ///
-    /// # Arguments
-    /// * `item` - A Value instance that holds the JSON data.
-    pub fn write_json(&mut self, item: &Value) {
-        self.write_string(item.to_string(), true);
-    }
-
-    /// Write the JSON items. This is used for the telemetry. If there is still
-    /// data in the buffer, we don't want to write the new data but to flush
-    /// the existing data instead.
-    ///
-    /// # Arguments
-    /// * `items` - A slice of Value instances that holds the JSON data.
-    pub fn write_jsons(&mut self, items: &[Value]) {
-        if let Some(stream) = self.writer.as_mut()
-            && !stream.buffer().is_empty()
-        {
-            self.flush();
-            return;
-        }
-
-        for item in items {
-            self.write_string(item.to_string(), false);
-        }
-        self.flush();
-    }
-
-    /// Write the string data to buffer.
-    ///
-    /// # Notes
-    /// Compared with the `self.write_json()` and `self.write_jsons()`, this is
-    /// a low-level function call, and you need to decide whether to flush the
-    /// stream after writing.
-    ///
-    /// # Arguments
-    /// * `data` - A string that holds the data.
-    /// * `flush` - Whether to flush the stream after writing the data.
-    pub fn write_string(&mut self, data: String, flush: bool) {
-        if let Some(stream) = self.writer.as_mut() {
-            // Add the terminator.
-            let mut data_with_terminator = data;
-            data_with_terminator.push_str(&String::from_utf8_lossy(&self.terminator));
-
-            // Write the data to the buffer. Ignore the possible error.
-            let _ = stream.write(data_with_terminator.as_bytes());
-        }
-
-        if flush {
-            self.flush();
-        }
-    }
-
-    /// Flush the stream.
-    fn flush(&mut self) {
-        if let Some(stream) = self.writer.as_mut()
-            && let Err(error) = stream.flush()
-        {
-            match error.kind() {
-                std::io::ErrorKind::WouldBlock => {
-                    // The operation would block, we can try again later.
-                }
-                _ => {
-                    // The client is disconnected.
-                    debug!(
-                        "{} fails to flush the stream: {}. Diconnecting...",
-                        self.name, error
-                    );
-                    self.close_stream();
-                }
-            }
-        }
-    }
-
-    /// Close the stream.
-    fn close_stream(&mut self) {
-        info!("{} is disconnected.", self.name);
-
-        // Flush the stream in the writer first before closing the stream.
-        if let Some(stream) = self.writer.as_mut() {
-            // Ignore the possible error.
-            let _ = stream.flush();
-        }
-
-        // Shutdown the stream in the reader and writer.
-        if let Some(stream) = self.reader.as_ref() {
-            // Ignore the possible error.
-            let _ = stream.get_ref().shutdown(Shutdown::Both);
-        }
-
-        self.reader = None;
-        self.writer = None;
-
-        self.is_connected.store(false, Ordering::Relaxed);
     }
 
     /// Run the server.
@@ -344,7 +143,7 @@ impl TcpServer {
         F1: FnMut(&mut TcpServer, &mut T),
         F2: FnMut(&mut TcpServer, &mut T),
     {
-        info!("{} is running.", self.name);
+        info!("{} is running.", self.connection.name);
         while !self.stop.load(Ordering::Relaxed) {
             if self.is_connected() {
                 callback_periodic(self, other);
@@ -357,7 +156,23 @@ impl TcpServer {
             }
         }
 
-        info!("{} is stopped.", self.name);
+        info!("{} is stopped.", self.connection.name);
+    }
+}
+
+impl TcpClientServerCommon for TcpServer {
+    const PEER: &'static str = "client";
+
+    fn connection(&self) -> &TcpConnection {
+        &self.connection
+    }
+
+    fn connection_mut(&mut self) -> &mut TcpConnection {
+        &mut self.connection
+    }
+
+    fn set_connected(&mut self, is_connected: bool) {
+        self.is_connected.store(is_connected, Ordering::Relaxed);
     }
 }
 
@@ -366,6 +181,8 @@ mod tests {
     use super::*;
 
     use serde_json::json;
+    use std::io::Write;
+    use std::net::{Shutdown, TcpStream};
     use std::sync::Arc;
     use std::thread::spawn;
 
@@ -622,8 +439,7 @@ mod tests {
 
         server.close_stream();
 
-        assert!(server.reader.is_none());
-        assert!(server.writer.is_none());
+        assert!(!server.connection.has_stream());
     }
 
     #[test]
